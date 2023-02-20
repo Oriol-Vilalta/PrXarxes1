@@ -1,15 +1,34 @@
 #!/usr/bin/python3.10 python3
 import argparse
+import random
 import re
 import struct
 import threading
 import socket
+
+REGISTER_REQ = 0x00
+REGISTER_ACK = 0x02
+REGISTER_NACK = 0x04
+REGISTER_REJ = 0x06
+
+DISCONNECTED = 0xA0
+WAIT_REG_RESPONSE = 0xA2
+WAIT_DB_CHECK = 0xA4
+REGISTERED = 0xA6
+SEND_ALIVE = 0xA8
+
+ALIVE_INF = 0x10
+ALIVE_ACK = 0x12
+ALIVE_NACK = 0x14
+ALIVE_REJ = 0x16
 
 # GLOBAL VARIABLES
 debug_mode = False
 
 server = None
 equips = []
+
+udp_sock = None
 
 
 class Server:
@@ -24,6 +43,7 @@ class Equip:
     def __init__(self, id, mac):
         self.id = id
         self.mac = mac
+        self.state = DISCONNECTED
 
 
 class Udp_PDU:
@@ -41,10 +61,13 @@ class Udp_PDU:
     @staticmethod
     def decode_package(buffer):
         s = struct.unpack("B 7s 13s 7s 50s", buffer)
-        id = s[1].decode('utf-8')
-        mac = s[2].decode('ascii')
-        rand = s[3].decode('ascii')
-        data = s[4].decode('ascii')
+        id = s[1].decode()[:-1]
+        mac = s[2].decode()[:-1]
+        rand = s[3].decode()[:-1]
+        try:
+            data = s[4].decode()
+        except UnicodeDecodeError:
+            data = ""
         return Udp_PDU(s[0], id, mac, rand, data)
 
 
@@ -120,15 +143,71 @@ def start_udp_socket():
     return udp_sock
 
 
+def get_udp_type_name(type):
+    if type == 0x00:
+        return "REGISTER_REQ"
+    elif type == 0x02:
+        return "REGISTER_ACK"
+    elif type == 0x04:
+        return "REGISTER_NACK"
+    elif type == 0x06:
+        return "REGISTER_REJ"
+    elif type == 0x0F:
+        return "ERROR"
+    elif type == 0x10:
+        return "ALIVE_INF"
+    elif type == 0x12:
+        return "ALIVE_ACK"
+    elif type == 0x14:
+        return "ALIVE_NACK"
+    elif type == 0x16:
+        return "ALIVE_REJ"
+
+
+def check_authorization(id, mac):
+    equipment = None
+    for equip in equips:
+        if equip.id == id and equip.mac == mac:
+            equipment = equip
+    return equipment
+
+
+def create_rand_num():
+    rand = ""
+    for i in range(6):
+        rand += str(random.randint(0, 9))
+    return rand
+
+
+def process_register_request(reg_req, addr):
+    equip = check_authorization(reg_req.id, reg_req.mac)
+    if equip is not None and equip.state == DISCONNECTED:
+        rand = create_rand_num()
+        reg_ack = Udp_PDU(REGISTER_ACK, equip.id, equip.mac, rand, str(server.tcp_port))
+
+        global udp_sock
+        udp_sock.sendto(reg_ack.encode_package(), addr)
+    elif equip.state != DISCONNECTED:
+        print("[ERROR] Equipment {}")
+
+
+def handle_udp_package(buffer, addr):
+    package = Udp_PDU.decode_package(buffer)
+    print(f"Packet rebut: type={get_udp_type_name(package.type)} ,id={package.id}, mac={package.mac}, rand={package.rand}, data={package.data}")
+
+    if package.type == REGISTER_REQ:
+        process_register_request(package, addr)
+
+
 def udp_service():
+    global udp_sock
+    print("UDP Online")
     udp_sock = start_udp_socket()
 
     while True:
-        pack, conn = udp_sock.recvfrom(78)
-        pack_cond = Udp_PDU.decode_package(pack)
-
-        print(pack_cond.id)
-
+        buffer, conn = udp_sock.recvfrom(78)
+        thread = threading.Thread(target=handle_udp_package, args=(buffer, conn,))
+        thread.start()
 
 
 def main():
@@ -140,3 +219,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
