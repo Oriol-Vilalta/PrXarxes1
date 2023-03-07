@@ -97,7 +97,7 @@ pthread_t send_alives_tid, process_alive_tid;
 sem_t stop_client_semaphore;
 
 //Pending alives for the periodic communication
-pthread_mutex_t pending_alives_mtx;
+pthread_mutex_t pending_alives_mtx, stop_send_alives_mtx;
 int pending_alives;
 
 //SAFE STOP
@@ -109,6 +109,7 @@ void free_memory(void) {
     free(server);
     free(client);
     pthread_mutex_destroy(&pending_alives_mtx);
+    pthread_mutex_destroy(&stop_send_alives_mtx);
     sem_destroy(&stop_client_semaphore);
 }
 
@@ -452,6 +453,8 @@ void process_register_req_answer(struct Udp_PDU answer) {
  * @param max_processes number of processes
  */
 void start_registration(int max_processes) {
+    client_state = DISCONNECTED;
+
     //Build the REGISTER_REQ package
     struct Udp_PDU reg_req_package = build_reg_req();
     struct Udp_PDU received_package;
@@ -516,7 +519,9 @@ _Noreturn void *send_alives(void) {
 
     while(true) {
         //Send the ALIVE_INF package
+        pthread_mutex_lock(&stop_send_alives_mtx);
         send_udp_pdu_to_server(send_inf);
+        pthread_mutex_unlock(&stop_send_alives_mtx);
 
         //Increase the pendent alives
         pthread_mutex_lock(&pending_alives_mtx);
@@ -551,7 +556,7 @@ _Noreturn void *receive_alive_answer(void) {
     struct Udp_PDU response;
 
     struct timeval timeout;
-    timeout.tv_sec = 100;
+    timeout.tv_sec = 10000;
     setsockopt(udp_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
     while(true) {
@@ -563,6 +568,10 @@ _Noreturn void *receive_alive_answer(void) {
             pthread_mutex_lock(&pending_alives_mtx);
             pending_alives--;
             pthread_mutex_unlock(&pending_alives_mtx);
+        } else if(response.type == ALIVE_REJ) {
+            pthread_mutex_lock(&stop_send_alives_mtx);
+            start_registration(1);
+            pthread_mutex_unlock(&stop_send_alives_mtx);
         }
 
     }
